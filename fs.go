@@ -3,6 +3,7 @@ package mem
 import (
 	"errors"
 	"io"
+	"maps"
 	"os"
 	"path"
 	"sort"
@@ -358,9 +359,7 @@ func (fs *FS) walkDirInternal(parentName string, n *node) (map[string]*node, err
 			return nil, err
 		}
 
-		for name, child := range next {
-			nodes[name] = child
-		}
+		maps.Copy(nodes, next)
 	}
 
 	return nodes, nil
