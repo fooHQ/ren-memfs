@@ -3,7 +3,6 @@ package mem_test
 import (
 	"fmt"
 	"io"
-	iofs "io/fs"
 	"math/rand/v2"
 	"os"
 	"testing"
@@ -12,19 +11,6 @@ import (
 
 	memfs "github.com/foohq/ren-memfs"
 )
-
-func TestFS_Create(t *testing.T) {
-	fs, err := memfs.NewFS()
-	require.NoError(t, err)
-
-	f, err := fs.Create("test.txt")
-	require.NoError(t, err)
-	defer f.Close()
-
-	info, err := fs.Stat("test.txt")
-	require.NoError(t, err)
-	require.False(t, info.IsDir())
-}
 
 func TestFS_Mkdir(t *testing.T) {
 	fs, err := memfs.NewFS()
@@ -50,16 +36,48 @@ func TestFS_MkdirAll(t *testing.T) {
 	require.True(t, info.IsDir())
 }
 
-func TestFS_Open(t *testing.T) {
+func TestFS_MkdirTemp(t *testing.T) {
 	fs, err := memfs.NewFS()
 	require.NoError(t, err)
 
-	_, err = fs.Create("test.txt")
-	require.NoError(t, err)
+	t.Run("basic", func(t *testing.T) {
+		dir, err := fs.MkdirTemp("", "test")
+		require.NoError(t, err)
+		require.Contains(t, dir, "test")
 
-	f, err := fs.Open("test.txt")
-	require.NoError(t, err)
-	defer f.Close()
+		info, err := fs.Stat(dir)
+		require.NoError(t, err)
+		require.True(t, info.IsDir())
+	})
+
+	t.Run("with pattern", func(t *testing.T) {
+		dir, err := fs.MkdirTemp("", "test-*-suffix")
+		require.NoError(t, err)
+		require.Contains(t, dir, "test-")
+		require.Contains(t, dir, "-suffix")
+
+		info, err := fs.Stat(dir)
+		require.NoError(t, err)
+		require.True(t, info.IsDir())
+	})
+
+	t.Run("in subdirectory", func(t *testing.T) {
+		err := fs.Mkdir("subdir", 0755)
+		require.NoError(t, err)
+
+		dir, err := fs.MkdirTemp("subdir", "test")
+		require.NoError(t, err)
+		require.Contains(t, dir, "subdir/test")
+
+		info, err := fs.Stat(dir)
+		require.NoError(t, err)
+		require.True(t, info.IsDir())
+	})
+
+	t.Run("parent not exists", func(t *testing.T) {
+		_, err := fs.MkdirTemp("nonexistent", "test")
+		require.Error(t, err)
+	})
 }
 
 func TestFS_OpenFile(t *testing.T) {
@@ -236,7 +254,7 @@ func TestFS_Remove(t *testing.T) {
 	fs, err := memfs.NewFS()
 	require.NoError(t, err)
 
-	_, err = fs.Create("test.txt")
+	_, err = fs.OpenFile("test.txt", os.O_WRONLY|os.O_CREATE, 0644)
 	require.NoError(t, err)
 
 	err = fs.Remove("test.txt")
@@ -264,7 +282,8 @@ func TestFS_Rename(t *testing.T) {
 	fs, err := memfs.NewFS()
 	require.NoError(t, err)
 
-	_, err = fs.Create("old.txt")
+	_, err = fs.OpenFile("old.txt", os.O_WRONLY|os.O_CREATE, 0644)
+	require.NoError(t, err)
 	require.NoError(t, err)
 
 	err = fs.Rename("old.txt", "new.txt")
@@ -281,7 +300,7 @@ func TestFS_Stat(t *testing.T) {
 	fs, err := memfs.NewFS()
 	require.NoError(t, err)
 
-	_, err = fs.Create("test.txt")
+	_, err = fs.OpenFile("test.txt", os.O_WRONLY|os.O_CREATE, 0644)
 	require.NoError(t, err)
 
 	info, err := fs.Stat("test.txt")
@@ -293,7 +312,7 @@ func TestFS_Symlink(t *testing.T) {
 	fs, err := memfs.NewFS()
 	require.NoError(t, err)
 
-	_, err = fs.Create("target.txt")
+	_, err = fs.OpenFile("target.txt", os.O_WRONLY|os.O_CREATE, 0644)
 	require.NoError(t, err)
 
 	err = fs.Symlink("target.txt", "link.txt")
@@ -323,42 +342,11 @@ func TestFS_ReadDir(t *testing.T) {
 	err = fs.Mkdir("dir", 0755)
 	require.NoError(t, err)
 
-	_, err = fs.Create("dir/file.txt")
+	_, err = fs.OpenFile("dir/file.txt", os.O_WRONLY|os.O_CREATE, 0644)
 	require.NoError(t, err)
 
 	entries, err := fs.ReadDir("dir")
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	require.Equal(t, "file.txt", entries[0].Name())
-}
-
-func TestFS_WalkDir(t *testing.T) {
-	fs, err := memfs.NewFS()
-	require.NoError(t, err)
-
-	err = fs.MkdirAll("storage/data", 0755)
-	require.NoError(t, err)
-
-	err = fs.WriteFile("storage/data/chunk.txt", []byte("hello world!"), 0600)
-	require.NoError(t, err)
-
-	err = fs.WriteFile("storage/file.txt", []byte("hello world!"), 0600)
-	require.NoError(t, err)
-
-	var paths []string
-	err = fs.WalkDir("storage", func(path string, d iofs.DirEntry, err error) error {
-		require.NoError(t, err)
-		if d.IsDir() {
-			_, err = fs.ReadDir(path)
-		} else {
-			_, err = fs.ReadFile(path)
-		}
-		require.NoError(t, err)
-		paths = append(paths, path)
-		return nil
-	})
-	require.NoError(t, err)
-
-	expected := []string{"/storage", "/storage/data", "/storage/data/chunk.txt", "/storage/file.txt"}
-	require.ElementsMatch(t, expected, paths)
 }

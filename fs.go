@@ -3,15 +3,14 @@ package mem
 import (
 	"errors"
 	"io"
-	"maps"
+	"math/rand/v2"
 	"os"
 	"path"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	risoros "github.com/risor-io/risor/os"
+	"github.com/foohq/ren"
 )
 
 var (
@@ -25,7 +24,7 @@ var (
 type node struct {
 	name     string
 	content  []byte
-	mode     risoros.FileMode
+	mode     ren.FileMode
 	modTime  time.Time
 	children map[string]*node
 	isDir    bool
@@ -33,7 +32,7 @@ type node struct {
 	mu       sync.RWMutex
 }
 
-var _ risoros.FS = &FS{}
+var _ ren.FS = (*FS)(nil)
 
 type FS struct {
 	root *node
@@ -53,30 +52,51 @@ func NewFS() (*FS, error) {
 	}, nil
 }
 
-// Create creates a new file
-func (fs *FS) Create(name string) (risoros.File, error) {
-	return fs.OpenFile(name, risoros.O_RDWR|risoros.O_CREATE|risoros.O_TRUNC, 0666)
-}
-
 // Mkdir creates a new directory
-func (fs *FS) Mkdir(name string, perm risoros.FileMode) error {
+func (fs *FS) Mkdir(name string, perm ren.FileMode) error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	return fs.mkdirInternal(cleanPath(name), perm)
 }
 
 // MkdirAll creates a directory and all necessary parents
-func (fs *FS) MkdirAll(pth string, perm risoros.FileMode) error {
+func (fs *FS) MkdirAll(pth string, perm ren.FileMode) error {
 	return fs.mkdirAllInternal(cleanPath(pth), perm)
 }
 
-// Open opens a file for reading
-func (fs *FS) Open(name string) (risoros.File, error) {
-	return fs.OpenFile(name, risoros.O_RDONLY, 0)
+// MkdirTemp creates a new temporary directory in the directory dir
+// and returns the pathname of the new directory.
+func (fs *FS) MkdirTemp(dir, pattern string) (string, error) {
+	if dir == "" {
+		dir = cleanPath("tmp")
+		err := fs.mkdirAllInternal(dir, 0755)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	prefix, suffix, ok := strings.Cut(pattern, "*")
+	if !ok {
+		prefix = pattern
+		suffix = ""
+	}
+
+	for i := 0; i < 10000; i++ {
+		name := path.Join(dir, prefix+randomString()+suffix)
+		err := fs.mkdirInternal(cleanPath(name), 0755)
+		if err == nil {
+			return name, nil
+		}
+		if !errors.Is(err, ErrExist) {
+			return "", err
+		}
+	}
+
+	return "", errors.New("cannot create temporary directory")
 }
 
 // OpenFile opens a file with specified flags
-func (fs *FS) OpenFile(name string, flag int, perm risoros.FileMode) (risoros.File, error) {
+func (fs *FS) OpenFile(name string, flag int, perm ren.FileMode) (ren.File, error) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
@@ -87,7 +107,7 @@ func (fs *FS) OpenFile(name string, flag int, perm risoros.FileMode) (risoros.Fi
 	}
 
 	if parent == fs.root && base == "" {
-		if flag&risoros.O_WRONLY != 0 || flag&risoros.O_RDWR != 0 {
+		if flag&os.O_WRONLY != 0 || flag&os.O_RDWR != 0 {
 			return nil, ErrIsDirectory
 		}
 
@@ -101,7 +121,7 @@ func (fs *FS) OpenFile(name string, flag int, perm risoros.FileMode) (risoros.Fi
 	defer parent.mu.Unlock()
 
 	if n, exists := parent.children[base]; exists {
-		if n.isDir && (flag&risoros.O_WRONLY != 0 || flag&risoros.O_RDWR != 0) {
+		if n.isDir && (flag&os.O_WRONLY != 0 || flag&os.O_RDWR != 0) {
 			return nil, ErrIsDirectory
 		}
 		return &virtualFile{
@@ -110,7 +130,7 @@ func (fs *FS) OpenFile(name string, flag int, perm risoros.FileMode) (risoros.Fi
 		}, nil
 	}
 
-	if flag&risoros.O_CREATE == 0 {
+	if flag&os.O_CREATE == 0 {
 		return nil, ErrNotExist
 	}
 
@@ -129,7 +149,7 @@ func (fs *FS) OpenFile(name string, flag int, perm risoros.FileMode) (risoros.Fi
 
 // ReadFile reads the entire contents of a file
 func (fs *FS) ReadFile(name string) ([]byte, error) {
-	f, err := fs.Open(name)
+	f, err := fs.OpenFile(name, os.O_RDONLY, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +257,7 @@ func (fs *FS) Rename(oldpath, newpath string) error {
 }
 
 // Stat returns file information
-func (fs *FS) Stat(name string) (risoros.FileInfo, error) {
+func (fs *FS) Stat(name string) (ren.FileInfo, error) {
 	n, err := fs.getNode(cleanPath(name))
 	if err != nil {
 		return nil, err
@@ -273,8 +293,8 @@ func (fs *FS) Symlink(oldname, newname string) error {
 }
 
 // WriteFile writes data to a file
-func (fs *FS) WriteFile(name string, data []byte, perm risoros.FileMode) error {
-	f, err := fs.OpenFile(name, risoros.O_WRONLY|risoros.O_CREATE|risoros.O_TRUNC, perm)
+func (fs *FS) WriteFile(name string, data []byte, perm ren.FileMode) error {
+	f, err := fs.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
 	if err != nil {
 		return err
 	}
@@ -285,7 +305,7 @@ func (fs *FS) WriteFile(name string, data []byte, perm risoros.FileMode) error {
 }
 
 // ReadDir reads directory contents
-func (fs *FS) ReadDir(name string) ([]risoros.DirEntry, error) {
+func (fs *FS) ReadDir(name string) ([]ren.DirEntry, error) {
 	n, err := fs.getNode(cleanPath(name))
 	if err != nil {
 		return nil, err
@@ -298,71 +318,11 @@ func (fs *FS) ReadDir(name string) ([]risoros.DirEntry, error) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
-	var entries []risoros.DirEntry
+	var entries []ren.DirEntry
 	for _, child := range n.children {
 		entries = append(entries, &dirEntry{node: child})
 	}
 	return entries, nil
-}
-
-// WalkDir walks the directory tree
-func (fs *FS) WalkDir(root string, fn risoros.WalkDirFunc) error {
-	root = cleanPath(root)
-	n, err := fs.getNode(root)
-	if err != nil {
-		return err
-	}
-
-	if !n.isDir {
-		return ErrNotDirectory
-	}
-
-	nodes, err := fs.walkDirInternal(root, n)
-	if err != nil {
-		return err
-	}
-
-	// Push root directory as a node
-	nodes[root] = n
-
-	// Create a list of paths and sort them
-	paths := make([]string, 0, len(nodes))
-	for k := range nodes {
-		paths = append(paths, k)
-	}
-	sort.Strings(paths)
-
-	for _, pth := range paths {
-		err := fn(pth, &dirEntry{node: nodes[pth]}, nil)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (fs *FS) walkDirInternal(parentName string, n *node) (map[string]*node, error) {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-
-	nodes := make(map[string]*node)
-	for _, child := range n.children {
-		childPath := path.Join(parentName, child.name)
-		nodes[childPath] = child
-		if !child.isDir {
-			continue
-		}
-
-		next, err := fs.walkDirInternal(childPath, child)
-		if err != nil {
-			return nil, err
-		}
-
-		maps.Copy(nodes, next)
-	}
-
-	return nodes, nil
 }
 
 type virtualFile struct {
@@ -372,7 +332,7 @@ type virtualFile struct {
 }
 
 func (f *virtualFile) Read(b []byte) (int, error) {
-	if f.flag&risoros.O_WRONLY != 0 {
+	if f.flag&os.O_WRONLY != 0 {
 		return 0, ErrBadDescriptor
 	}
 
@@ -389,7 +349,7 @@ func (f *virtualFile) Read(b []byte) (int, error) {
 }
 
 func (f *virtualFile) Write(b []byte) (int, error) {
-	if f.flag&risoros.O_WRONLY == 0 && f.flag&risoros.O_RDWR == 0 {
+	if f.flag&os.O_WRONLY == 0 && f.flag&os.O_RDWR == 0 {
 		return 0, ErrBadDescriptor
 	}
 
@@ -406,7 +366,7 @@ func (f *virtualFile) Close() error {
 	return nil
 }
 
-func (f *virtualFile) Stat() (risoros.FileInfo, error) {
+func (f *virtualFile) Stat() (ren.FileInfo, error) {
 	return &fileInfo{
 		node: f.node,
 	}, nil
@@ -428,7 +388,7 @@ func (fi *fileInfo) Size() int64 {
 	return int64(len(fi.node.content))
 }
 
-func (fi *fileInfo) Mode() risoros.FileMode {
+func (fi *fileInfo) Mode() ren.FileMode {
 	fi.node.mu.RLock()
 	defer fi.node.mu.RUnlock()
 	mode := fi.node.mode
@@ -470,13 +430,13 @@ func (de *dirEntry) IsDir() bool {
 	return de.node.isDir
 }
 
-func (de *dirEntry) Type() risoros.FileMode {
+func (de *dirEntry) Type() ren.FileMode {
 	de.node.mu.RLock()
 	defer de.node.mu.RUnlock()
 	return de.node.mode
 }
 
-func (de *dirEntry) Info() (risoros.FileInfo, error) {
+func (de *dirEntry) Info() (ren.FileInfo, error) {
 	return &fileInfo{
 		node: de.node,
 	}, nil
@@ -530,7 +490,7 @@ func (fs *FS) getParent(pth string) (*node, string, error) {
 	return n, base, nil
 }
 
-func (fs *FS) mkdirInternal(pth string, perm risoros.FileMode) error {
+func (fs *FS) mkdirInternal(pth string, perm ren.FileMode) error {
 	parent, base, err := fs.getParent(pth)
 	if err != nil {
 		return err
@@ -553,7 +513,7 @@ func (fs *FS) mkdirInternal(pth string, perm risoros.FileMode) error {
 	return nil
 }
 
-func (fs *FS) mkdirAllInternal(pth string, perm risoros.FileMode) error {
+func (fs *FS) mkdirAllInternal(pth string, perm ren.FileMode) error {
 	if pth == "/" {
 		return nil
 	}
@@ -591,4 +551,16 @@ func (fs *FS) mkdirAllInternal(pth string, perm risoros.FileMode) error {
 
 func cleanPath(pth string) string {
 	return path.Clean("/" + pth)
+}
+
+const tmpDirChars = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+func randomString() string {
+	var buf [10]byte
+	v := rand.Uint64()
+	for i := range buf {
+		buf[i] = tmpDirChars[v%36]
+		v /= 36
+	}
+	return string(buf[:])
 }

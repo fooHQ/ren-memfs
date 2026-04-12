@@ -3,15 +3,17 @@ module github.com/foohq/ren-memfs
 go 1.26
 
 require (
-	github.com/foohq/ren v0.1.0
+	github.com/foohq/ren v0.2.0-rc1
 	github.com/stretchr/testify v1.11.1
 )
 
 require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
+	github.com/deepnoodle-ai/risor/v2 v2.1.0 // indirect
+	github.com/deepnoodle-ai/wonton v0.0.29 // indirect
 	github.com/foohq/urlpath v0.2.0 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/risor-io/risor v1.8.1 // indirect
+	golang.org/x/sys v0.43.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
